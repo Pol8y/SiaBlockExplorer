@@ -1,0 +1,146 @@
+import requests
+import time
+import sqlite3
+ 
+def collect_ids(obj):
+    ids = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == 'id':
+                ids.append(value)
+            else:
+                ids.extend(collect_ids(value))
+    elif isinstance(obj, list):
+        for item in obj:
+            ids.extend(collect_ids(item))
+    return ids
+
+def collect_addresses(obj):
+    addresses = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == 'address':
+                addresses.append(value)
+            else:
+                addresses.extend(collect_addresses(value))
+    elif isinstance(obj, list):
+        for item in obj:
+            addresses.extend(collect_addresses(item))
+    return addresses
+
+
+start_time = time.perf_counter()
+end_time = time.perf_counter()
+elapsed_time =end_time - start_time
+
+url2 = 'https://explorer.siagraph.info/api/'
+url = 'http://localhost:10000/api/'
+tip = 'consensus/tip'
+blocks = 'blocks/'
+wallet = 'addresses/'
+balance = '/balance'
+trx = 'transactions/'
+rtip = requests.get(url2+tip)
+
+
+start_time = time.perf_counter()
+
+
+open('height.txt','w').close()
+if rtip.status_code == 200:
+    data = rtip.json()
+    height = data.get('height')
+    print(height)
+    with open('height.txt','w') as file:
+        file.write(f'{height}')
+    block_id = data.get('id')
+
+all_blocks_transactions_ids = []
+
+for i in range(1,height):
+    rtipn = requests.get(url2+tip+'/'+ str(i))
+    if rtipn.status_code == 200:
+        data = rtipn.json()
+        height = data.get('height')
+        block_id = data.get('id')
+        rblock_id = requests.get(f'{url2}{blocks}{block_id}')
+        if rblock_id.status_code == 200:
+            data2 = rblock_id.json()
+            transactions = data2.get('transactions', [])
+            
+            block_transaction_ids = []
+
+            for tx in transactions:
+                 block_transaction_ids.extend(collect_ids(tx))
+            all_blocks_transactions_ids.extend(block_transaction_ids)
+
+
+
+print(f"\nTotal Transactions IDs Collected: {len(all_blocks_transactions_ids)}")
+
+open('transaction_ids.txt','w').close()
+with open('transaction_ids.txt', 'w') as file:
+    for tx_id in all_blocks_transactions_ids:
+        file.write(f'{tx_id}\n')
+
+
+with open('transaction_ids.txt','r') as file:
+    all_blocks_transactions_ids = file.readlines()
+
+open('addresses.txt','w').close()
+for tx in all_blocks_transactions_ids:
+    tx =tx.strip()
+    rtrx = requests.get(f'{url2}{trx}{tx}')
+    if rtrx.status_code == 200:
+        data3 = rtrx.json()
+        addresses = collect_addresses(data3)
+        if addresses:
+            with open('addresses.txt', 'a') as file:
+                for address in addresses:
+                    file.write(f'{address}\n')
+
+print(f"\nTotal Wallets Collected: {len(addresses)}")
+
+
+
+with open('addresses.txt','r') as file:
+    all_wallets = file.readlines()
+    all_wallets = sorted(set(line.strip() for line in all_wallets))
+
+
+conn = sqlite3.connect('wallets.db')
+cursor = conn.cursor()
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS wallets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        address TEXT UNIQUE,
+        balance REAL
+    )
+''')
+conn.commit
+
+open('wallets_balance.txt','w').close()
+
+for wx in all_wallets:
+    wx = wx.strip()
+    rwx = requests.get(f'{url2}{wallet}{wx}{balance}')
+    if rwx.status_code == 200:
+        data4 = rwx.json()
+        siacoin_balance = data4.get('unspentSiacoins')
+        actual_balance = float(int(siacoin_balance))/ 1e24
+        try:
+            cursor.execute('INSERT INTO wallets (address, balance) VALUES (?, ?)', (wx,actual_balance))
+        except sqlite3.IntegrityError:
+            cursor.execute('UPDATE wallets SET balance = ? WHERE address = ?', (actual_balance,wx))
+conn.commit()
+
+cursor.execute('SELECT address, balance FROM wallets ORDER BY balance DESC')
+results = cursor.fetchall()
+
+for wx, actual_balance in results:
+    print(f'Address: {wx}, Balance: {actual_balance}')
+
+
+end_time = time.perf_counter()
+elapsed_time =end_time - start_time
+print(f'{elapsed_time} seconds to complete')
